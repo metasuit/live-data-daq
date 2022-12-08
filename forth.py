@@ -13,16 +13,21 @@ from matplotlib.figure import Figure
 values = list()
 cap_list = list()
 
-initial_guess = True
-sampling_time = 1 / 100000  # sampling time, find way to get from settings!
+
+#Parameters to set up:
+mu = 0.1 # 0 < mu < 1, forgetting factor, the smaller mu, the faster the RLS but noise is amplified
+sampleRate = 100000
+delta = 1 #value to initialize Pk(0)
+
+
 # initial guesses
 initial_voltage = 2  # voltage, subscript denotes previous step
 initial_r_electrodes = 3000  # resistance of electrodes
 initial_capacity = 9e-12  # capacity of hasel
 initial_current = 1e-10  # current
-
+initial_guess = True
 theta= np.array([initial_voltage, initial_r_electrodes * initial_current, (sampling_time/initial_capacity - initial_r_electrodes) * initial_current])
-Pk= 1
+Pk= delta * np.identity(3) #initial state of recursive function Pk
 
 
 class voltageContinuousInput(tk.Frame):
@@ -80,6 +85,7 @@ class voltageContinuousInput(tk.Frame):
     def runTask(self):
         # Check if task needs to update the graph
         rms = 0
+        sampling_time = 1/sampleRate
         two_input_vals = self.task.read(nidaqmx.constants.READ_ALL_AVAILABLE)
         if len(two_input_vals[0]) > 2000:
 
@@ -87,9 +93,8 @@ class voltageContinuousInput(tk.Frame):
             vals = two_input_vals[0][0:2000]
             # voltage
             vals2 = two_input_vals[1][0:2000]
-            average = np.sum(np.abs(vals)) / len(vals)
-            rms = np.sqrt(2) * np.pi * average / 4.0
-            values.append(rms)
+
+            #values.append(rms)
 
             # print(rms)
             # print("RMS above")
@@ -103,11 +108,26 @@ class voltageContinuousInput(tk.Frame):
 
             ik = np.sum(np.abs(vals)) / len(vals)
             phik = np.array([vk_1, ik, ik_1])
+            phik_t = phik.transpose() 
 
-            theta = theta + Pk
+            average = np.sum(np.abs(vals2)) / len(vals2)
+            vk = np.sqrt(2) * np.pi * average / 4.0 #rms
 
+            #updating estimates
+            div_fact = 1 + np.dot(phik_t, np.dot(Pk * phik))
+            if div_fact != 0:
+                theta = theta + np.dot(Pk, phik) / div_fact * (vk- np.dot(phik_t, theta))
+                Pk = 1 / mu * (Pk - np.dot(Pk, np.dot(phik, np.dot(phik_t, Pk))) / div_fact)
+            else:
+                print("division by zero while updating")
+            initial_guess = False #from now on use previously updated estimate
 
+            Rk = theta[1] / phik[1] # theta / ik
+            Ck = sampling_time / (theta[2] / phik[2] + Rk) # Ts / (theta / ik_1) + Rk
+            print(Ck)
+            values.append(Ck)
 
+            """
             for i in range(199):
                 deltav1 = vals[i + 1] - vals[i]
                 deltav0 = vals2[i + 1] - vals2[i]
@@ -118,7 +138,7 @@ class voltageContinuousInput(tk.Frame):
                     cap_list.append(capacity)
                 else:
                     print("division by zero")
-
+            """
         else:
             print("short data")
 
