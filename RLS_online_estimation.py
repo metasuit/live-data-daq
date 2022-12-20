@@ -135,18 +135,6 @@ class voltageContinuousInput(tk.Frame):
             print(Ck)
             cap_list.append(Ck)
 
-            """
-            for i in range(199):
-                deltav1 = vals[i + 1] - vals[i]
-                deltav0 = voltage_vals[i + 1] - voltage_vals[i]
-                print(deltav0, deltav1)
-                denom = 10000 * deltav0 - ((200000 + 10000) * deltav1)
-                if denom != 0:
-                    capacity = (1) * vals[i] / denom
-                    cap_list.append(capacity)
-                else:
-                    print("division by zero")
-            """
         else:
             print("short data")
 
