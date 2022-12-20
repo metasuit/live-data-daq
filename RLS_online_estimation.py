@@ -10,24 +10,11 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-values = list()
+#Set up empty lists for values of both voltage measurements (the second voltage to calculate current) and capacities
+rms_volt_list = list()
+rms_cur_volt_list = list()
 cap_list = list()
-
-
-#Parameters to set up:
-mu = 0.1 # 0 < mu < 1, forgetting factor, the smaller mu, the faster the RLS but noise is amplified
-sampleRate = 100000
-delta = 1 #value to initialize Pk(0)
-
-
-# initial guesses
-initial_voltage = 2  # voltage, subscript denotes previous step
-initial_r_electrodes = 3000  # resistance of electrodes
-initial_capacity = 9e-12  # capacity of hasel
-initial_current = 1e-10  # current
-initial_guess = True
-theta= np.array([initial_voltage, initial_r_electrodes * initial_current, (sampling_time/initial_capacity - initial_r_electrodes) * initial_current])
-Pk= delta * np.identity(3) #initial state of recursive function Pk
+Ck = 1
 
 
 class voltageContinuousInput(tk.Frame):
@@ -39,7 +26,7 @@ class voltageContinuousInput(tk.Frame):
         self.master = master
         self.master.title("Voltage - Continuous Input")
         self.master.iconbitmap("Voltage - Continuous Input.ico")
-        self.master.geometry("1100x600")
+        self.master.geometry("1100x700")
 
         self.create_widgets()
         self.pack()
@@ -57,6 +44,8 @@ class voltageContinuousInput(tk.Frame):
         self.graphDataFrame.grid(row=0, rowspan=2, column=2, pady=(20, 0), ipady=10)
 
     def startTask(self):
+        global data_type_for_graph
+        
         # Prevent user from starting task a second time
         self.inputSettingsFrame.startButton['state'] = 'disabled'
 
@@ -65,16 +54,35 @@ class voltageContinuousInput(tk.Frame):
 
         # Get task settings from the user
         physicalChannel = self.channelSettingsFrame.physicalChannelEntry.get()
+        physicalChannel2 = self.channelSettingsFrame.physicalChannelEntry2.get()
         maxVoltage = int(self.channelSettingsFrame.maxVoltageEntry.get())
         minVoltage = int(self.channelSettingsFrame.minVoltageEntry.get())
         sampleRate = int(self.inputSettingsFrame.sampleRateEntry.get())
+        self.data_type_for_graph = self.inputSettingsFrame.dataTypeCombobox.get()
         self.numberOfSamples = int(
             self.inputSettingsFrame.numberOfSamplesEntry.get())  # Have to share number of samples with runTask
+
+        #Parameters to set up:
+        self.mu = 0.1 # 0 < mu < 1, forgetting factor, the smaller mu, the faster the RLS but noise is amplified
+        self.current_meas_resistance = 10000
+        delta = 1 #value to initialize Pk(0)
+
+
+        # initial guesses
+        initial_voltage = 2  # voltage, subscript denotes previous step
+        initial_r_electrodes = 3000  # resistance of electrodes
+        initial_capacity = 9e-12  # capacity of hasel
+        initial_current = 1e-10  # current
+        self.Pk= delta * np.identity(3) #initial state of recursive function Pk
+        self.vk_1 = initial_voltage
+        self.ik_1 = initial_current
+        self.sampling_time = 1 / sampleRate
+        self.theta= np.array([initial_voltage, initial_r_electrodes * initial_current, (self.sampling_time/initial_capacity - initial_r_electrodes) * initial_current])
 
         # Create and start task
         self.task = nidaqmx.Task()
         self.task.ai_channels.add_ai_voltage_chan(physicalChannel, min_val=minVoltage, max_val=maxVoltage)
-        self.task.ai_channels.add_ai_voltage_chan("myDAQ1/ai1", min_val=minVoltage, max_val=maxVoltage)
+        self.task.ai_channels.add_ai_voltage_chan(physicalChannel2, min_val=minVoltage, max_val=maxVoltage)
         self.task.timing.cfg_samp_clk_timing(sampleRate, sample_mode=nidaqmx.constants.AcquisitionType.CONTINUOUS,
                                              samps_per_chan=2000)  # samps_per_chan=self.numberOfSamples*3)
         self.task.start()
@@ -84,53 +92,53 @@ class voltageContinuousInput(tk.Frame):
 
     def runTask(self):
         # Check if task needs to update the graph
-        rms = 0
-        sampling_time = 1/sampleRate
+        global Ck
         two_input_vals = self.task.read(nidaqmx.constants.READ_ALL_AVAILABLE)
         if len(two_input_vals[0]) > 2000:
-
+            
             # current
-            vals = two_input_vals[0][0:2000]
+            current_voltages = two_input_vals[0][0:2000]
             # voltage
-            vals2 = two_input_vals[1][0:2000]
+            voltage_vals = two_input_vals[1][0:2000]
 
-            #values.append(rms)
 
-            # print(rms)
-            # print("RMS above")
-            # print(type(vals))
-            # print(len(vals))
-            # values.append(rms)
-
-            if initial_guess:
-                vk_1 = initial_voltage
-                ik_1 = initial_current
-
-            ik = np.sum(np.abs(vals)) / len(vals)
-            phik = np.array([vk_1, ik, ik_1])
+            average_cur_volt = np.sum(np.abs(current_voltages) / len(current_voltages))
+            vk_cur_volt = np.sqrt(2) * np.pi * average_cur_volt / 4.0
+            
+            self.ik = vk_cur_volt / self.current_meas_resistance
+            phik = np.array([self.vk_1, self.ik, self.ik_1])
             phik_t = phik.transpose() 
 
-            average = np.sum(np.abs(vals2)) / len(vals2)
-            vk = np.sqrt(2) * np.pi * average / 4.0 #rms
+            average = np.sum(np.abs(voltage_vals)) / len(voltage_vals)
+            self.vk = np.sqrt(2) * np.pi * average / 4.0 #rms
+
+
+            #if statement which records the RMS values of both voltage inputs for graph if so desired
+            if self.data_type_for_graph == "RMS Voltages":
+
+                rms_volt_list.append(self.vk)
+                rms_cur_volt_list.append(vk_cur_volt)
 
             #updating estimates
-            div_fact = 1 + np.dot(phik_t, np.dot(Pk * phik))
+            div_fact = 1 + np.dot(phik_t, np.dot(self.Pk, phik))
             if div_fact != 0:
-                theta = theta + np.dot(Pk, phik) / div_fact * (vk- np.dot(phik_t, theta))
-                Pk = 1 / mu * (Pk - np.dot(Pk, np.dot(phik, np.dot(phik_t, Pk))) / div_fact)
+                self.theta = self.theta + np.dot(self.Pk, phik) / div_fact * (self.vk- np.dot(phik_t, self.theta))
+                self.Pk = 1 / self.mu * (self.Pk - np.dot(self.Pk, np.dot(phik, np.dot(phik_t, self.Pk))) / div_fact)
             else:
                 print("division by zero while updating")
-            initial_guess = False #from now on use previously updated estimate
+            #update last measurements to current one for next run
+            self.ik_1 = self.ik
+            self.vk_1 = self.vk
 
-            Rk = theta[1] / phik[1] # theta / ik
-            Ck = sampling_time / (theta[2] / phik[2] + Rk) # Ts / (theta / ik_1) + Rk
+            self.Rk = self.theta[1] / phik[1] # theta / ik
+            Ck = self.sampling_time / (self.theta[2] / phik[2] + self.Rk) # Ts / (theta / ik_1) + Rk
             print(Ck)
-            values.append(Ck)
+            cap_list.append(Ck)
 
             """
             for i in range(199):
                 deltav1 = vals[i + 1] - vals[i]
-                deltav0 = vals2[i + 1] - vals2[i]
+                deltav0 = voltage_vals[i + 1] - voltage_vals[i]
                 print(deltav0, deltav1)
                 denom = 10000 * deltav0 - ((200000 + 10000) * deltav1)
                 if denom != 0:
@@ -143,8 +151,13 @@ class voltageContinuousInput(tk.Frame):
             print("short data")
 
         self.graphDataFrame.ax.cla()
-        self.graphDataFrame.ax.set_title("RMS: " + str(rms))
-        self.graphDataFrame.ax.plot(values)
+        if self.data_type_for_graph == "RMS Voltages":
+            self.graphDataFrame.ax.set_title("RMS Voltages: ")
+            self.graphDataFrame.ax.plot(rms_volt_list)
+            self.graphDataFrame.ax.plot(rms_cur_volt_list)
+        else:
+            self.graphDataFrame.ax.set_title("Capacity: " + str(Ck))
+            self.graphDataFrame.ax.plot(cap_list)
         # self.graphDataFrame.ax.plot(cap_list)
         # self.graphDataFrame.ax.plot(vals)
         self.graphDataFrame.graph.draw()
@@ -154,7 +167,9 @@ class voltageContinuousInput(tk.Frame):
             self.master.after(5, self.runTask)
 
         else:
-            values.clear()
+            cap_list.clear()
+            rms_volt_list.clear()
+            rms_cur_volt_list.clear()
             self.task.stop()
             self.task.close()
             self.inputSettingsFrame.startButton['state'] = 'enabled'
@@ -174,26 +189,34 @@ class channelSettings(tk.LabelFrame):
         self.create_widgets()
 
     def create_widgets(self):
-        self.physicalChannelLabel = ttk.Label(self, text="Physical Channel")
+        self.physicalChannelLabel = ttk.Label(self, text="Physical Channels")
         self.physicalChannelLabel.grid(row=0, sticky='w', padx=self.xPadding, pady=(10, 0))
 
-        self.physicalChannelEntry = ttk.Entry(self)
-        self.physicalChannelEntry.insert(0, "myDAQ1/ai0")
+        self.physicalChannelEntry = ttk.Combobox(self, values=["myDAQ1/ai0", "MyDAQ1/ai1"])
+        self.physicalChannelEntry.current(0)
         self.physicalChannelEntry.grid(row=1, sticky="ew", padx=self.xPadding)
+        #Add space between channels
+        self.spacer = ttk.Label(self, text="")
+        self.spacer.grid(row=2, sticky="w", padx=self.xPadding, pady=(5,0))
+        #Add second Channel
+        self.physicalChannelEntry2 = ttk.Combobox(self, values=["myDAQ1/ai0", "myDAQ1/ai1"])
+        self.physicalChannelEntry2.current(1)
+        self.physicalChannelEntry2.grid(row=3, sticky="ew", padx=self.xPadding)
 
         self.maxVoltageLabel = ttk.Label(self, text="Max Voltage")
-        self.maxVoltageLabel.grid(row=2, sticky='w', padx=self.xPadding, pady=(10, 0))
+        self.maxVoltageLabel.grid(row=4, sticky='w', padx=self.xPadding, pady=(10, 0))
 
         self.maxVoltageEntry = ttk.Entry(self)
         self.maxVoltageEntry.insert(0, "10")
-        self.maxVoltageEntry.grid(row=3, sticky="ew", padx=self.xPadding)
+        self.maxVoltageEntry.grid(row=5, sticky="ew", padx=self.xPadding)
 
         self.minVoltageLabel = ttk.Label(self, text="Min Voltage")
-        self.minVoltageLabel.grid(row=4, sticky='w', padx=self.xPadding, pady=(10, 0))
+        self.minVoltageLabel.grid(row=6, sticky='w', padx=self.xPadding, pady=(10, 0))
 
         self.minVoltageEntry = ttk.Entry(self)
         self.minVoltageEntry.insert(0, "-10")
-        self.minVoltageEntry.grid(row=5, sticky="ew", padx=self.xPadding, pady=(0, 10))
+        self.minVoltageEntry.grid(row=7, sticky="ew", padx=self.xPadding, pady=(0, 10))
+
 
 
 class inputSettings(tk.LabelFrame):
@@ -223,6 +246,13 @@ class inputSettings(tk.LabelFrame):
 
         self.stopButton = ttk.Button(self, text="Stop Task", command=self.parent.stopTask)
         self.stopButton.grid(row=4, column=1, sticky='e', padx=self.xPadding, pady=(10, 0))
+
+        #Add a Combobox widget to choose between "Voltages" and "Capacity"
+        self.dataTypeLabel = ttk.Label(self, text="Data type used in graph")
+        self.dataTypeLabel.grid(row=5, column=0, sticky='w', padx=self.xPadding, pady=(10,0))
+        self.dataTypeCombobox = ttk.Combobox(self, values=["RMS Voltages", "Capacity"])
+        self.dataTypeCombobox.current(1)
+        self.dataTypeCombobox.grid(row=6, column=0, sticky='ew', padx=self.xPadding)
 
 
 class graphData(tk.Frame):
